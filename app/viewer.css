@@ -515,14 +515,14 @@
   z-index: 0;
 }
 
-/* Overlay spans -30% to 160% so that 0 to 1000 units map onto the slide and
-   strokes can run past the edge without being clipped. */
+/* Overlay spans -100% to 200% of the slide, so pen and eraser work on the empty
+   board around the slide as well as on it. Units 0 to 1000 still map onto the slide. */
 .page svg.drawing-overlay {
   position: absolute;
-  top: -30%;
-  left: -30%;
-  width: 160%;
-  height: 160%;
+  top: -100%;
+  left: -100%;
+  width: 300%;
+  height: 300%;
   z-index: 1;
   overflow: visible;
   touch-action: none;

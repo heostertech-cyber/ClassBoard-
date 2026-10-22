@@ -370,6 +370,8 @@ export function ViewerClient() {
   const [color, setColor] = useState("#2563eb");
   const [fontFamily, setFontFamily] = useState("Inter, system-ui, sans-serif");
   const [fontSize, setFontSize] = useState(32);
+  // Auto text size keeps new text at least 16 px tall on screen, whatever the slide size.
+  const [textSizeAuto, setTextSizeAuto] = useState(true);
   const [opacity, setOpacity] = useState(1.0);
   const [width, setWidth] = useState(3);
   const [size, setSize] = useState(100);
@@ -609,7 +611,7 @@ export function ViewerClient() {
   const lastPenAt = useRef(0);
   const ignoredPointers = useRef(new Set<number>());
   const drawOwner = useRef<PointerOwner | null>(null);
-  const eraseOwner = useRef<(PointerOwner & { snapshot: Annotation[] }) | null>(null);
+  const eraseOwner = useRef<(PointerOwner & { snapshot: Annotation[]; last: Point }) | null>(null);
   const panOwner = useRef<(PointerOwner & { start: Point; origin: Point }) | null>(null);
   const transformOwner = useRef<PointerOwner | null>(null);
   const gestureRef = useRef<PinchGesture | null>(null);
@@ -773,7 +775,7 @@ export function ViewerClient() {
     setActiveDropdown(null);
     setZoomMenuOpen(false);
     setMoreOpen(false);
-    if (autoHideDock && drawingTypes.includes(tool as AnnotationType)) setDockCollapsed(true);
+    if (autoHideDock && (drawingTypes.includes(tool as AnnotationType) || tool.includes("eraser"))) setDockCollapsed(true);
     const pt = point(e);
     const owner: PointerOwner = { id: e.pointerId, type: e.pointerType };
     if (tool === "select") {
@@ -783,7 +785,7 @@ export function ViewerClient() {
     if (tool === "pan") return;
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
     if (tool.includes("eraser")) {
-      eraseOwner.current = { ...owner, snapshot: annotationsForErase.current };
+      eraseOwner.current = { ...owner, snapshot: annotationsForErase.current, last: pt };
       setEraserPos(pt);
       eraseAtPoint(pt);
     } else {
@@ -796,7 +798,18 @@ export function ViewerClient() {
     const pt = point(e);
     if (tool.includes("eraser") || (laserPointer && e.pointerType !== "touch")) setEraserPos(pt);
     if (tool.includes("eraser")) {
-      if (eraseOwner.current?.id === e.pointerId) eraseAtPoint(pt);
+      const owner = eraseOwner.current;
+      if (owner?.id === e.pointerId) {
+        // Fast swipes send sparse samples; step along the path so thin strokes are not skipped.
+        const step = Math.max(eraserSize / 2000, 0.002);
+        const dist = Math.hypot(pt.x - owner.last.x, pt.y - owner.last.y);
+        const steps = Math.min(200, Math.max(1, Math.ceil(dist / step)));
+        for (let i = 1; i <= steps; i++) {
+          const t = i / steps;
+          eraseAtPoint({ x: owner.last.x + (pt.x - owner.last.x) * t, y: owner.last.y + (pt.y - owner.last.y) * t });
+        }
+        owner.last = pt;
+      }
       return;
     }
     if (transformOwner.current) {
@@ -1135,6 +1148,12 @@ export function ViewerClient() {
     );
   };
 
+  const autoTextUnits = () => {
+    const slideWidthPx = pageEl.current?.getBoundingClientRect().width || 960;
+    return Math.round(Math.max(32, (16 * 1000) / slideWidthPx));
+  };
+  const textUnits = () => (textSizeAuto ? autoTextUnits() : fontSize);
+
   // FIX #1: text tool now opens dialog when user draws/taps
   const finish = (e: PointerEvent) => {
     if (!draft || !overlay.current || tool === "select" || tool === "pan" || tool.includes("eraser")) return;
@@ -1184,7 +1203,7 @@ export function ViewerClient() {
     const annotation: Annotation = {
       id: createdId, documentId: documentId ?? "", pageNumber: page,
       type: tool, ...rawBox, rotation: 0,
-      style: { color, fill: shapeFill, opacity: currentOpacity, strokeWidth: strokeW, fontSize, fontFamily },
+      style: { color, fill: shapeFill, opacity: currentOpacity, strokeWidth: strokeW, fontSize: textUnits(), fontFamily },
       content: undefined, points: pts,
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };
@@ -1247,7 +1266,7 @@ export function ViewerClient() {
       const annotation: Annotation = {
         id: createId(), documentId: documentId ?? "", pageNumber: page,
         type: "text", ...box, rotation: 0,
-        style: { color, opacity, strokeWidth: width, fontSize, fontFamily },
+        style: { color, opacity, strokeWidth: width, fontSize: textUnits(), fontFamily },
         content: textValue.trim(),
         createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       };
@@ -1413,7 +1432,7 @@ export function ViewerClient() {
   const strokeColor = selectedAnnotation?.style.color ?? color;
   const strokeWidthValue = selectedAnnotation?.style.strokeWidth ?? width;
   const opacityValue = selectedAnnotation?.style.opacity ?? opacity;
-  const fontSizeValue = selectedAnnotation?.style.fontSize ?? fontSize;
+  const fontSizeValue = selectedAnnotation?.style.fontSize ?? textUnits();
   // Presenting: the control strip fades after 3 s without input, and returns on any touch, pen, or key.
   const [barAwake, setBarAwake] = useState(true);
   useEffect(() => {
@@ -1682,7 +1701,7 @@ export function ViewerClient() {
                   <svg
                     ref={overlay}
                     className="drawing-overlay"
-                    viewBox="-300 -300 1600 1600"
+                    viewBox="-1000 -1000 3000 3000"
                     preserveAspectRatio="none"
                     style={{ touchAction: "none", userSelect: "none", WebkitUserSelect: "none" }}
                     onDragOver={e => e.preventDefault()}
@@ -1920,6 +1939,7 @@ export function ViewerClient() {
                     <input className="range" type="range" min="12" max="160" step="2" value={fontSizeValue} aria-label="Text size"
                       onChange={e => {
                         const v = +e.target.value;
+                        setTextSizeAuto(false);
                         setFontSize(v);
                         if (selectedAnnotation) updateSelected({ height: Math.max(selectedAnnotation.height, (v * 1.5) / 1000), style: { fontSize: v } });
                       }} />
@@ -2181,10 +2201,11 @@ export function ViewerClient() {
               </select>
             </label>
             <div className="field">
-              <span>Size ({fontSize}px)</span>
+              <span>{textSizeAuto ? `Size (auto, about ${Math.round(autoTextUnits() * (pageEl.current?.getBoundingClientRect().width || 960) / 1000)}px on screen)` : `Size (${fontSize} units)`}</span>
               <div className="segmented segmented-wrap" role="radiogroup" aria-label="Font size">
+                <button type="button" role="radio" aria-checked={textSizeAuto} className={`seg-btn ${textSizeAuto ? "is-active" : ""}`} onClick={() => setTextSizeAuto(true)}>Auto</button>
                 {fontSizePresets.map(fs => (
-                  <button key={fs} type="button" role="radio" aria-checked={fontSize === fs} className={`seg-btn ${fontSize === fs ? "is-active" : ""}`} onClick={() => setFontSize(fs)}>{fs}</button>
+                  <button key={fs} type="button" role="radio" aria-checked={!textSizeAuto && fontSize === fs} className={`seg-btn ${!textSizeAuto && fontSize === fs ? "is-active" : ""}`} onClick={() => { setTextSizeAuto(false); setFontSize(fs); }}>{fs}</button>
                 ))}
               </div>
             </div>
@@ -2310,7 +2331,7 @@ export function ViewerClient() {
 
                   <section className="sheet-section">
                     <h3>Toolbar</h3>
-                    <ToggleRow label="Hide tools while drawing" hint="Collapses the toolbar when you use pen or ink" on={autoHideDock} onToggle={() => setAutoHideDock(v => !v)} />
+                    <ToggleRow label="Hide tools while drawing" hint="Collapses the toolbar when you write, highlight, or erase" on={autoHideDock} onToggle={() => setAutoHideDock(v => !v)} />
                     <ToggleRow label="Show page list" hint="Thumbnails on the left edge" on={sidebarOpen} onToggle={() => setSidebarOpen(v => !v)} />
                   </section>
                 </>
